@@ -93,6 +93,7 @@ parser.add_argument("--T", type=int, help="number of time steps between each pat
 parser.add_argument("--n-adapt", type=float, default=0.5, help="number of time steps between each pattern presentation (with zero input)")
 parser.add_argument("--nhid", type=int, default=50, help="number of time steps between each pattern presentation (with zero input)")
 parser.add_argument("--N", type=int, default=50000, help="number of time steps between each pattern presentation (with zero input)")
+parser.add_argument("--rnn-type", type=str, default='GRU', help="GRU | RNN")
 
 args = parser.parse_args(); argvars = vars(args); argdict =  { k : argvars[k] for k in argvars if argvars[k] != None }
 params.update(argdict)
@@ -117,6 +118,38 @@ vis = visdom.Visdom(port=8095, env=str(params['name']) + ' (%s)' % exp_id)
 import time
 vis.text('', opts=dict(width=10000, height=1))
 
+
+from plastic_rnn import GRU, RNN
+
+class PlasticPredictor(nn.Module):
+    def __init__(self, nin, nhid, nout, hebb='z,r,h', ln=True):
+        super(PlasticPredictor, self).__init__()
+
+        # self.inp = nn.Identity() # or Plastic
+        if params['rnn_type'] == 'GRU':
+            self.rnn = GRU(nin, nhid, hebb=set(hebb.split(',')), ln=True)
+        else:
+            self.rnn = RNN(nin, nhid, hebb=params['type']=='plastic', ln=True)
+        self.out = nn.Linear(nhid, nout)
+
+    def forward(self, x, hid, hebb=None):
+        # x = self.inp(x)
+        hid, hebb = self.rnn(x, hid, hebb)
+        y = self.out(hid)
+
+        # HACK
+        self.eta_hat = torch.zeros(1) if not hasattr(self.rnn.h.hid_lin, 'eta_hat') else self.rnn.h.hid_lin.eta_hat
+        self.lamda = torch.zeros(1) if not hasattr(self.rnn.h.hid_lin, 'lamda') else self.rnn.h.hid_lin.lamda
+
+        return hid, hebb, y
+
+    def initialZeroState(self):
+        # Return an initialized, all-zero hidden state
+        return self.rnn.initialZeroState()
+
+    def initialZeroHebb(self):
+        # Return an initialized, all-zero Hebbian trace
+        return self.rnn.initialZeroHebb()
 
 class NETWORK(nn.Module):
     def __init__(self):
@@ -217,11 +250,14 @@ class NETWORK(nn.Module):
         return Variable(torch.zeros(self.nhid, self.nhid).type(ttype)) + 1e-6
 
 
-net = NETWORK()
+# net = NETWORK()
+net = PlasticPredictor(nin=3, nhid=params['nhid'], nout=1, hebb=params['type'], ln=True).cuda()
 
-optimizer = torch.optim.Adam([net.w, net.alpha, net.eta, net.pred_eta,
-    net.b1, net.b0, net.pred_eta_b,
-    net.w0, net.w1], lr=params['lr'])
+optimizer = torch.optim.Adam(net.parameters(), lr=params['lr'])
+import pdb; pdb.set_trace
+# optimizer = torch.optim.Adam([net.w, net.alpha, net.eta, net.pred_eta,
+#     net.b1, net.b0, net.pred_eta_b,
+#     net.w0, net.w1], lr=params['lr'])
 
 # optimizer = torch.optim.SGD([net.w, net.alpha, net.eta,
 #     net.b1, net.b0, net.pred_eta, net.pred_eta_b,
@@ -394,17 +430,13 @@ for numiter in range(params['N']):
         total_loss /= print_every
         all_losses.append(total_loss)
         print("Mean loss over last", print_every, "iters:", total_loss)
-        print("Eta: ", net.eta.item(), "mean Alpha", net.alpha.mean().item())
+        # print("Eta: ", net.lamda.item(), "mean Alpha", net.alpha.mean().item())
         print("Mean Eta: ", sum([e.abs().mean() for e in etas]).item() / len(etas), "Eta sparsity: ", sum([(e>0.1).float().mean() for e in etas]).item() / len(etas))
         # print(sum([e.abs()/ e.sum() for e in etas]) / len(etas))
-        with open('output_simple_'+str(RNGSEED)+'.dat', 'wb') as fo:
-            pickle.dump(net.w.data.cpu().numpy(), fo)
-            pickle.dump(net.alpha.data.cpu().numpy(), fo)
-            pickle.dump(y.data.cpu().numpy(), fo)  # The final y for this episode
-            pickle.dump(all_losses, fo)
-        with open('loss_simple_'+str(RNGSEED)+'.txt', 'w') as fo:
-            for item in all_losses:
-                fo.write("%s\n" % item)
+
+        vis.text('<br>'.join(["%s" % i for i in all_losses]), win='log' + str(exp_id),
+            opts=dict(width=300, height=300))
+
         total_loss = 0
 
 

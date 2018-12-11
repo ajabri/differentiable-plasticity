@@ -37,8 +37,6 @@ import vae
 import os
 
 import sys
-import sklearn
-import sklearn.decomposition
 
 
 
@@ -98,118 +96,18 @@ ttype = torch.cuda.FloatTensor;     # For GPU
 bce_loss = nn.BCELoss().type(ttype)
 
 
-class GRU(nn.Module):
-    def __init__(self, nin, nout, hebb=set(), ln=True):
-        super(GRU, self).__init__()
-        self.h = Cell(nin, nout, hebb='h' in hebb, ln=ln, nonlin=nn.Tanh)
-        self.z = Cell(nin, nout, hebb='z' in hebb, ln=ln, nonlin=nn.Sigmoid)
-        self.r = Cell(nin, nout, hebb='r' in hebb, ln=ln, nonlin=nn.Sigmoid)
-        self.nin  = nin
-        self.nout = nout
-    
-    def forward(self, x, hid, hebb=(None, None, None)):
-        zt, zp = self.z(x, hid, hebb)
-        rt, rp = self.r(x, hid, hebb)
-        ht, hp = self.h(x, rt * hid, hebb)
-        st = zt * hid + (-zt + 1) * ht
-        return st, (zp, rp, hp)
+from plastic_rnn import GRU, RNN
 
-    def initialZeroState(self):
-        # Return an initialized, all-zero hidden state
-        return Variable(torch.zeros(1, self.nhid).type(ttype))
-
-    def initialZeroHebb(self):
-        # Return an initialized, all-zero Hebbian trace
-        return Variable(torch.zeros(self.nout, self.nout).type(ttype)) + 1e-6
-
-
-class Cell(nn.Module):
-    def __init__(self, nin, nout, hebb=True, ln=True, nonlin=nn.Tanh):
-        super(Cell, self).__init__()
-
-        self.inp_lin = nn.Linear(nin, nout)
-        self.hid_lin = Plastic(nout, nout) if hebb else nn.Linear(nout, nout)
-        self.nonlin = nonlin()
-        self.hebb = hebb
-        if ln:
-            self.ln = torch.nn.LayerNorm(nin).type(ttype)
-
-    def forward(self, x, hid, hebb=None):
-        assert (hebb is not None) == self.hebb
-
-        wx = self.inp_lin(x)
-        wh = self.hid_lin((hid, hebb) if self.hebb else hid)
-
-        wy = self.nonlin(self.ln(wx + wh))
-
-        if self.hebb:
-            hebb = self.hid_lin.update_hebb(hid, wy) # TODO OR (hid, wh)
-            return wy, hebb
-
-        return wy, None
-
-class Plastic(nn.Module):
-    def __init__(self, nin, nout):
-        super(Plastic, self).__init__()
-
-        self.w = nn.Parameter(.01 * torch.eye(nin, nout).type(ttype), requires_grad=True)   # The matrix of fixed (baseline) weights
-        self.nonlin = nn.Tanh()
-        self.alpha = nn.Parameter(.01 * torch.randn(nin, nout).type(ttype), requires_grad=True)
-
-        # predict lambda?
-        self.lamda = nn.Parameter(.01 * torch.ones(1).type(ttype), requires_grad=True)  # The weight decay term / "learning rate" of plasticity - trainable, but shared across all connections
-
-        self.pred_eta = nn.Parameter(.01 * torch.randn(nout, nout**1).type(ttype), requires_grad=True)
-        self.pred_eta_b = nn.Parameter(.01 * torch.randn(nout).type(ttype), requires_grad=True)
-
-        # self.pred_eta = nn.Parameter(.01 * torch.randn(nout, nout**1).type(ttype), requires_grad=True)
-
-        # import pdb; pdb.set_trace()
-
-    def forward(self, x, hebb):
-        return x.mm(self.w  + (torch.mul(self.alpha, hebb)) )
-        
-    def update_hebb(self, x, y):
-        eta_hat = F.sigmoid(y.mm(self.pred_eta) + self.pred_eta_b)
-
-        # hebb = torch.clamp( hebb + eta_hat.transpose(0,1) * torch.bmm(yin.unsqueeze(2), ymid.unsqueeze(1))[0], min=-1, max=1)
-        
-        # first simple
-        # hebb = (1 - self.eta) * hebb + self.eta * torch.bmm(yin.unsqueeze(2), ymid.unsqueeze(1))[0] # bmm here is used to implement an outer product between yin and yout, with the help of unsqueeze (i.e. added empty dimensions)
-        
-        # oja's rule?
-        # hebb = hebb + self.eta * torch.bmm(ymid.unsqueeze(2), (yin - ymid.mm(hebb)).unsqueeze(1)  )[0]
-        
-        # clipped hebbian
-        # hebb = torch.clamp( hebb + self.eta * torch.bmm(yin.unsqueeze(2), ymid.unsqueeze(1))[0], min=-1, max=1)
-
-        # backpropamine
-        eta_hat = F.sigmoid(ymid.mm(self.pred_eta) + self.pred_eta_b)
-
-        # hebb = torch.clamp( hebb + eta_hat.transpose(0,1) * torch.bmm(yin.unsqueeze(2), ymid.unsqueeze(1))[0], min=-1, max=1)
-        hebb = self.lamda * hebb + eta_hat.transpose(0,1) * torch.bmm(x.unsqueeze(2), y.unsqueeze(1))[0]
-        # hebb = torch.clamp( hebb + eta_hat.view(self.nhid, self.nhid) * torch.bmm(yin.unsqueeze(2), ymid.unsqueeze(1))[0], min=-1, max=1)
-       
-        self.eta_hat = eta_hat
-
-        return hebb
-
-class PlasticPredictor(nn.Module):
-    def __init__(self, nin, nhid, nout, hebb='h,z,r', ln=True):
-        self.inp = nn.Identity() # or Plastic
-        self.rnn = GRU(nin, nhid, hebb=set(hebb.split(',')), ln=True)
-        self.out = nn.Linear(nhid, nout)
-
-    def forward(self, x, hid, hebb=None):
-        x = self.inp(x)
-        hid, hebb = self.rnn(x, hid, hebb)
-        y = self.out(hid)
-
-        return hid, hebb, out
 
 class PlasticPixelPredictor(nn.Module):
     def __init__(self, nin, nhid, nout, hebb='h,z,r', ln=True):
-        self.rnn = GRU(nin, nhid, hebb=set(hebb.split(',')), ln=True)
+        super(PlasticPixelPredictor, self).__init__()
+
+        if params['rnn_type'] == 'GRU':
+            self.rnn = GRU(nin, nhid, hebb=set(hebb.split(',')), ln=True)
+        else:
+            self.rnn = RNN(nin, nhid, hebb=params['type']=='plastic', ln=True)
+
         self.out = nn.Linear(nhid, nout)
         
         self.enc = vae.encoder()
@@ -223,6 +121,14 @@ class PlasticPixelPredictor(nn.Module):
         out = self.dec(y)
 
         return hid, hebb, out
+
+    def initialZeroState(self):
+        # Return an initialized, all-zero hidden state
+        return self.rnn.initialZeroState()
+
+    def initialZeroHebb(self):
+        # Return an initialized, all-zero Hebbian trace
+        return self.rnn.initialZeroHebb()
 
 class NETWORK(nn.Module):
     def __init__(self):
@@ -341,6 +247,8 @@ class NETWORK(nn.Module):
 
 net = NETWORK()
 
+net = PlasticPixelPredictor(nin=300, nhid=params['nhid'], nout=300, hebb=('h'), ln=True)
+
 # import pdb; pdb.set_trace()
 
 ##############
@@ -436,7 +344,6 @@ for e in range(100):
         out = []
         etas = []
         preds = []
-        ys = []
         optimizer.zero_grad()
 
         if e > n_pretrain:
@@ -458,7 +365,6 @@ for e in range(100):
 
                 out.append(pred)
                 etas.append(net.eta_hat)
-                ys.append(y)
 
         else:
             idxs = torch.randperm(mm.shape[1]-1)[:100]
@@ -504,17 +410,17 @@ for e in range(100):
             XX = pca.transform(YY)
 
             vis.scatter(X=XX,
-                win='pca' + str(exp_id) + str((numiter+1) % 3),
+                win='pca' + str(exp_id) + str((numiter+1) % 3) + str(T==_T),
                 opts=dict(
                     markercolor=(np.arange(T)/T * 255).astype(np.int),
-                    title='pca' + str(exp_id) + str((numiter+1) % 3)
+                    title='pca' + str(exp_id) + str((numiter+1) % 3) + str(T==_T)
                 ))
 
             vis.scatter(X=np.concatenate([XX,  (np.arange(T)[:,None] - T/2) /T], axis=-1),
-                win='pca3d' + str(exp_id) + str((numiter+1) % 3),
+                win='pca3d' + str(exp_id) + str((numiter+1) % 3) + str(T==_T),
                 opts=dict(
                     markercolor=(np.arange(T)/T * 255).astype(np.int),
-                    title='pca' + str(exp_id) + str((numiter+1) % 3)
+                    title='pca' + str(exp_id) + str((numiter+1) % 3) + str(T==_T)
                 ))
 
             # vis.line(X=torch.cat([inputs.squeeze(-1), inputs.squeeze(-1)], dim=-1), Y=torch.cat([target.squeeze(-1), torch.cat(out)], dim=-1), win=str(exp_id) + str((numiter+1) % 3), opts=dict(title=str(exp_id) + str((numiter+1) % 3)))

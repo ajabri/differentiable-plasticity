@@ -101,7 +101,7 @@ params.update(argdict)
 
 if params['name'] == 'auto':
     name = ''
-    for k in ['type', 'dataset', 'T', 'n-adapt', 'nhid']:
+    for k in ['type', 'dataset', 'T', 'n-adapt', 'nhid', 'rnn_type']:
         name += "%s[%s]" % (k, params[k])
     params['name'] = name
 

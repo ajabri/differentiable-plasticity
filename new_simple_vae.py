@@ -70,13 +70,14 @@ parser.add_argument("--dataset", help="", default='balls')
 parser.add_argument("--T", type=int, help="number of time steps between each pattern presentation (with zero input)", default=20)
 parser.add_argument("--n-adapt", type=float, default=0.5, help="number of time steps between each pattern presentation (with zero input)")
 parser.add_argument("--nhid", type=int, default=50, help="number of time steps between each pattern presentation (with zero input)")
+parser.add_argument("--rnn-type", type=str, default='GRU', help="GRU | RNN")
 
 args = parser.parse_args(); argvars = vars(args); argdict =  { k : argvars[k] for k in argvars if argvars[k] != None }
 params.update(argdict)
 
 if params['name'] == 'auto':
     name = ''
-    for k in ['type', 'dataset', 'T', 'n-adapt', 'nhid']:
+    for k in ['type', 'dataset', 'T', 'n-adapt', 'nhid', 'rnn_type']:
         name += "%s[%s]" % (k, params[k])
     params['name'] = name
 

@@ -413,7 +413,7 @@ saved = False
 n_pretrain = 10
 
 import os
-if os.path.exists(params['reload_vae']):
+if os.path.exists(params['reload_vae']) or os.path.exists(params['reload']):
     n_pretrain = -1
 
 ll = []
@@ -439,6 +439,7 @@ for e in range(100):
         ys = []
         optimizer.zero_grad()
 
+        
         if e > n_pretrain:
             if not saved and not os.path.exists(params['reload_vae']):
                 torch.save( {net.dec, net.enc}, '/data/ajabri/moving_mnist/vae.pth')
@@ -523,20 +524,21 @@ for e in range(100):
             # YY = torch.cat([torch.ones(target.squeeze(-1).shape), torch.ones(target.squeeze(-1).shape) + 1], dim=0)
             # vis.scatter(Y=YY, X=XX, win='scatter'+str(exp_id) + str((numiter+1) % 3), opts=dict(title=str(exp_id) + str((numiter+1) % 3)))
             if e > n_pretrain:
-                vis.images(torch.cat(out), nrow=20, win='vid'+str(exp_id) + str((numiter+1) % 3), opts=dict(title=str(exp_id) + str((numiter+1) % 3), 
-                                    height=50*(target.shape[0]//20 + 1), width=50*20))
+                vis.images(torch.cat(out),padding=2, nrow=20, win='vid'+str(exp_id) + str((numiter+1) % 3), opts=dict(title=str(exp_id) + str((numiter+1) % 3), 
+                                    height=50*(target.shape[0]//20 + 1), width=50*23))
 
                 vis.images(target.unsqueeze(1), nrow=20, win='vidtarg'+str(exp_id) + str((numiter+1) % 3), opts=dict(title=str(exp_id) + str((numiter+1) % 3), 
-                                    height=50*(target.shape[0]//20 + 1), width=50*20))
+                                    height=50*(target.shape[0]//20 + 1), width=50*23))
 
+                import pdb; pdb.set_trace()
             else:
                 vis.images(torch.cat([o[0] for o in out]).unsqueeze(1), 
                     nrow=20, win='vid'+str(exp_id) + str((numiter+1) % 3),
                     opts=dict(title=str(exp_id) + str((numiter+1) % 3),
-                    height=50*(target.shape[0]//20 + 1), width=50*20))
+                    height=50*(target.shape[0]//20 + 1), width=50*21))
                 vis.images(target[:, 0].unsqueeze(1), nrow=20, win='vidtarg'+str(exp_id) + str((numiter+1) % 3), 
                     opts=dict(title=str(exp_id) + str((numiter+1) % 3), 
-                    height=50*(target.shape[0]//20 + 1), width=50*20))
+                    height=50*(target.shape[0]//20 + 1), width=50*21))
 
             # import pdb; pdb.set_trace()
 

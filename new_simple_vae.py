@@ -63,7 +63,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--rngseed", type=int, help="random seed", default=0)
 parser.add_argument("--lr", type=float, help="learning rate of Adam optimizer", default=3e-4)
 parser.add_argument("--type", help="network type ('plastic' or 'nonplastic')", default='plastic')
-parser.add_argument("--name", help="network type ('plastic' or 'nonplastic')", default='main')
+parser.add_argument("--name", help="network type ('plastic' or 'nonplastic')", default='auto')
 parser.add_argument("--reload_vae", help="", default='')
 parser.add_argument("--reload", help="", default='')
 parser.add_argument("--dataset", help="", default='balls')
@@ -74,10 +74,16 @@ parser.add_argument("--nhid", type=int, default=50, help="number of time steps b
 args = parser.parse_args(); argvars = vars(args); argdict =  { k : argvars[k] for k in argvars if argvars[k] != None }
 params.update(argdict)
 
+if params['name'] == 'auto':
+    name = ''
+    for k in ['type', 'dataset', 'T', 'n-adapt', 'nhid']:
+        name += "%s[%s]" % (k, params[k])
+    params['name'] = name
+
 import visdom
-vis = visdom.Visdom(port=8095, env=str(params['name']) + str(time.time()))
+exp_id = int(time.time()/100)
+vis = visdom.Visdom(port=8095, env=str(params['name']) + ' (%s)' % exp_id)
 import time
-exp_id = int(time.time())
 vis.text('', opts=dict(width=10000, height=1))
 
 
@@ -245,7 +251,7 @@ class NETWORK(nn.Module):
         return Variable(torch.zeros(self.nhid, self.nhid).type(ttype)) + 1e-6
 
 
-net = NETWORK()
+# net = NETWORK()
 
 net = PlasticPixelPredictor(nin=300, nhid=params['nhid'], nout=300, hebb=('h'), ln=True)
 

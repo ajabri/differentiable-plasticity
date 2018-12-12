@@ -88,7 +88,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--rngseed", type=int, help="random seed", default=0)
 parser.add_argument("--lr", type=float, help="learning rate of Adam optimizer", default=3e-4)
 parser.add_argument("--type", help="network type ('plastic' or 'nonplastic')", default='plastic')
-parser.add_argument("--name", help="network type ('plastic' or 'nonplastic')", default='main')
+parser.add_argument("--name", help="network type ('plastic' or 'nonplastic')", default='auto')
 parser.add_argument("--T", type=int, help="number of time steps between each pattern presentation (with zero input)", default=20)
 parser.add_argument("--n-adapt", type=float, default=0.5, help="number of time steps between each pattern presentation (with zero input)")
 parser.add_argument("--nhid", type=int, default=50, help="number of time steps between each pattern presentation (with zero input)")
@@ -98,6 +98,12 @@ parser.add_argument("--rnn-type", type=str, default='GRU', help="GRU | RNN")
 args = parser.parse_args(); argvars = vars(args); argdict =  { k : argvars[k] for k in argvars if argvars[k] != None }
 params.update(argdict)
 
+
+if params['name'] == 'auto':
+    name = ''
+    for k in ['type', 'dataset', 'T', 'n-adapt', 'nhid']:
+        name += "%s[%s]" % (k, params[k])
+    params['name'] = name
 
 RNGSEED = 0             # Initial random seed - can be modified by passing a number as command-line argument
 
@@ -302,7 +308,7 @@ for numiter in range(params['N']):
     if _T != T:
         X *= 2
 
-    inputs = torch.arange(0, T).unsqueeze(-1).unsqueeze(-1).cuda() / T * X - (X/2)
+    inputs = torch.arange(0, T).unsqueeze(-1).unsqueeze(-1).cuda().float() / T * X - (X/2)
     # inputs = inputs[torch.randperm(inputs.numel())]    
     # inputs = (torch.sort(torch.rand(T))[0]).unsqueeze(-1).unsqueeze(-1).cuda() 
     # inputs = ((inputs - inputs.min()) / (inputs.max() - inputs.min())) * X - X//2
@@ -373,7 +379,7 @@ for numiter in range(params['N']):
 
     # That's it for the actual algorithm!
     # Print statistics, save files
-    lossnum = loss.data[0].item()   # Saved loss is the actual learning loss (MSE)
+    lossnum = loss.item()   # Saved loss is the actual learning loss (MSE)
     #to = target.cpu().numpy(); yo = torch.stack(out).data.cpu().numpy(); z = (yo - to) ** 2; lossnum = np.mean(z[:])  # Saved loss is the error rate
     
 

@@ -101,7 +101,7 @@ params.update(argdict)
 
 if params['name'] == 'auto':
     name = ''
-    for k in ['type', 'dataset', 'T', 'n-adapt', 'nhid', 'rnn_type']:
+    for k in ['type', 'T', 'n_adapt', 'nhid', 'rnn_type']:
         name += "%s[%s]" % (k, params[k])
     params['name'] = name
 
@@ -119,10 +119,10 @@ np.random.seed(RNGSEED); random.seed(RNGSEED); torch.manual_seed(RNGSEED)
 ttype = torch.cuda.FloatTensor;     # For GPU 
 
 import visdom
-exp_id = int(time.time()/100)
+exp_id = int(time.time()/1000)
 vis = visdom.Visdom(port=8095, env=str(params['name']) + ' (%s)' % exp_id)
 import time
-vis.text('', opts=dict(width=10000, height=1))
+# vis.text('', opts=dict(width=10000, height=1))
 
 
 from plastic_rnn import GRU, RNN

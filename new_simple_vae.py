@@ -38,6 +38,8 @@ import os
 
 import sys
 
+import sklearn
+import sklearn.decomposition
 
 
 def info(type, value, tb):
@@ -75,17 +77,16 @@ parser.add_argument("--rnn-type", type=str, default='GRU', help="GRU | RNN")
 args = parser.parse_args(); argvars = vars(args); argdict =  { k : argvars[k] for k in argvars if argvars[k] != None }
 params.update(argdict)
 
-if params['name'] == 'auto':
+if 'auto' in params['name']:
     name = ''
-    for k in ['type', 'dataset', 'T', 'n-adapt', 'nhid', 'rnn_type']:
+    for k in ['type', 'dataset', 'T', 'n_adapt', 'nhid', 'rnn_type']:
         name += "%s[%s]" % (k, params[k])
-    params['name'] = name
+    params['name'] = params['name'].replace('auto', name)
 
 import visdom
-exp_id = int(time.time()/100)
+exp_id = int(time.time()/1000)
 vis = visdom.Visdom(port=8095, env=str(params['name']) + ' (%s)' % exp_id)
 import time
-vis.text('', opts=dict(width=10000, height=1))
 
 
 RNGSEED = 0             # Initial random seed - can be modified by passing a number as command-line argument
@@ -121,11 +122,25 @@ class PlasticPixelPredictor(nn.Module):
         self.dec = vae.decoder()
 
     def forward(self, x, hid, hebb=None):
+        # x_orig = x
+        # B, T = x.shape[:2]
+        # if len(x.shape) > 3:
+        #     B, T = x.shape[:2]
+        #     x = x.view(B * T, *x.shape[2:])
+        
         x = self.enc(x)
+        # if len(x_orig.shape) > 3:
+        #     x = x.view(B, T, *x.shape[1:])
+        
+        # import pdb; pdb.set_trace()
+
         hid, hebb = self.rnn(x, hid, hebb)
         y = self.out(hid)
 
         out = self.dec(y)
+        # HACK
+        self.eta_hat = torch.zeros(1) if not hasattr(self.rnn.h.hid_lin, 'eta_hat') else self.rnn.h.hid_lin.eta_hat
+        self.lamda = torch.zeros(1) if not hasattr(self.rnn.h.hid_lin, 'lamda') else self.rnn.h.hid_lin.lamda
 
         return hid, hebb, out
 
@@ -137,155 +152,46 @@ class PlasticPixelPredictor(nn.Module):
         # Return an initialized, all-zero Hebbian trace
         return self.rnn.initialZeroHebb()
 
-class NETWORK(nn.Module):
-    def __init__(self):
-        super(NETWORK, self).__init__()
-        # Notice that the vectors are row vectors, and the matrices are transposed wrt the usual order, following apparent pytorch conventions
-        # Each *column* of w targets a single output neuron
-
-        self.nhid = 300
-
-        self.w0 = Variable(0.01 * torch.randn(3, self.nhid).type(ttype), requires_grad=True)
-        self.b0 = Variable(0.01 * torch.randn(self.nhid).type(ttype), requires_grad=True)
-
-        self.w = Variable(.01 * torch.eye(self.nhid, self.nhid).type(ttype), requires_grad=True)   # The matrix of fixed (baseline) weights
-
-        self.w1 = Variable(0.01 * torch.randn(self.nhid, self.nhid).type(ttype), requires_grad=True)
-        self.b1 = Variable(0.01 * torch.randn(self.nhid).type(ttype), requires_grad=True)
-
-        self.alpha = Variable(.01 * torch.randn(self.nhid, self.nhid).type(ttype), requires_grad=True)  # The matrix of plasticity coefficients
-        self.eta = Variable(.01 * torch.ones(1).type(ttype), requires_grad=True)  # The weight decay term / "learning rate" of plasticity - trainable, but shared across all connections
-
-        self.pred_eta = Variable(.01 * torch.randn(self.nhid, self.nhid**1).type(ttype), requires_grad=True)
-        self.pred_eta_b = Variable(.01 * torch.randn(self.nhid).type(ttype), requires_grad=True)
-
-        self.ln = torch.nn.LayerNorm(self.nhid).type(ttype)
-
-        self.enc = vae.encoder().type(ttype)
-        self.dec = vae.decoder().type(ttype)
-
-        self.eta_hat = 0
-    
-    def get_params(self):
-        return [self.enc, self.dec, self.w, self.b0, self.w1, self.b1, self.alpha, self.pred_eta, self.pred_eta_b, self.eta, self.eta_hat, self.ln]
-
-    def load_params(self, p):
-        self.enc, self.dec, self.w, self.b0, self.w1, self.b1, self.alpha, self.pred_eta, self.pred_eta_b, self.eta, self.eta_hat, self.ln = p
-
-    def forward(self, input, yin, hebb, E=None):
-        # Run the network for one timestep
-
-        nonlin = F.relu
-
-        # 0
-        # input = nonlin(input.mm(self.w0))
-        # yout = nonlin( yin.mm(self.w + torch.mul(self.alpha, hebb)) + input )
-        # hebb = (1 - self.eta) * hebb + self.eta * torch.bmm(yin.unsqueeze(2), yout.unsqueeze(1))[0] # bmm here is used to implement an outer product between yin and yout, with the help of unsqueeze (i.e. added empty dimensions)
-
-        # 0.5: apply hebbian learning where input also get hebbian weights
-        # input = nonlin(input.mm(self.w0 + torch.mul(self.alpha, hebb)))
-        # yout = nonlin( yin.mm(self.w + torch.mul(self.alpha, hebb)) + input )
-
-        
-
-        # 1: apply hebbian learning where yout is before adding input
-        i_t = self.enc(input)
-        # import pdb; pdb.set_trace()
-        # i_t = nonlin( input.mm(self.w0) )
-
-        # eta_hat = F.tanh(i_t.mm(self.pred_eta) + self.pred_eta_b) * 0 + 1
-        # ymid = yin.mm( eta_hat.transpose(0,1) * (self.w + torch.mul(self.alpha, hebb)) )
-
-        ymid = yin.mm(self.w  + (torch.mul(self.alpha, hebb)) )
-        # ymid = yin.mm( (torch.mul(self.alpha, hebb)) )
-
-        # ymid = yin.mm( self.w + torch.mul(self.alpha, hebb) )
-        
-        yout = nonlin( self.ln(ymid + i_t + self.b0))
-        # ymid = yout
-        
-        # first simple
-        # hebb = (1 - self.eta) * hebb + self.eta * torch.bmm(yin.unsqueeze(2), ymid.unsqueeze(1))[0] # bmm here is used to implement an outer product between yin and yout, with the help of unsqueeze (i.e. added empty dimensions)
-        
-        # oja's rule?
-        # hebb = hebb + self.eta * torch.bmm(ymid.unsqueeze(2), (yin - ymid.mm(hebb)).unsqueeze(1)  )[0]
-        
-        # clipped hebbian
-        # hebb = torch.clamp( hebb + self.eta * torch.bmm(yin.unsqueeze(2), ymid.unsqueeze(1))[0], min=-1, max=1)
-
-        # backpropamine
-        eta_hat = F.sigmoid(ymid.mm(self.pred_eta) + self.pred_eta_b)
-        # hebb = torch.clamp( hebb + eta_hat.transpose(0,1) * torch.bmm(yin.unsqueeze(2), ymid.unsqueeze(1))[0], min=-1, max=1)
-        hebb = (1-self.eta) * hebb + eta_hat.transpose(0,1) * torch.bmm(yin.unsqueeze(2), ymid.unsqueeze(1))[0]
-
-        # hebb = torch.clamp( hebb + eta_hat.view(self.nhid, self.nhid) * torch.bmm(yin.unsqueeze(2), ymid.unsqueeze(1))[0], min=-1, max=1)
-        self.eta_hat = eta_hat
-        # print(self.eta, params['type'])
-        # print(hebb.mean().item())
-
-        # import pdb; pdb.set_trace()        
-        if params['type'] == 'nonplastic':
-            hebb = 0
-        # hebb = 0
-
-        # hebbian trace
-        # E = (1 - self.eta) * E + self.eta * torch.bmm(yin.unsqueeze(2), ymid.unsqueeze(1))[0] 
-        # hebb = (1 - self.eta) * hebb + self.eta * torch.bmm(yin.unsqueeze(2), ymid.unsqueeze(1))[0] 
-
-        # # bmm here is used to implement an outer product between yin and yout, with the help of unsqueeze (i.e. added empty dimensions)
-
-        # 2: top-down modulation from error?
-        
-        out = yout.mm(self.w1) + self.b1
-
-        out = self.dec(out)
-        # import pdb; pdb.set_trace()
-
-        return yout, hebb, out
-
-    def initialZeroState(self):
-        # Return an initialized, all-zero hidden state
-        return Variable(torch.zeros(1, self.nhid).type(ttype))
-
-    def initialZeroHebb(self):
-        # Return an initialized, all-zero Hebbian trace
-        return Variable(torch.zeros(self.nhid, self.nhid).type(ttype)) + 1e-6
-
-
 # net = NETWORK()
 
-net = PlasticPixelPredictor(nin=300, nhid=params['nhid'], nout=300, hebb=('h'), ln=True)
+net = PlasticPixelPredictor(nin=300, nhid=params['nhid'], nout=300, hebb=('h'), ln=True).cuda()
 
-# import pdb; pdb.set_trace()
+# import pdb; pdb.setTrace()
 
 ##############
 
 if os.path.exists(params['reload_vae']) or os.path.exists(params['reload']):
     if os.path.exists(params['reload']):
         reloaded = torch.load(params['reload'])
-        net.load_params(reloaded)
+        net.load_state_dict(reloaded)
 
     if os.path.exists(params['reload_vae']):
         reloaded = list(torch.load(params['reload_vae']))
 
         net.enc, net.dec = reloaded
+        net.enc, net.dec = net.enc.cuda(), net.dec.cuda()
 
-    optimizer = torch.optim.Adam([net.alpha, net.eta,
-        net.pred_eta, net.pred_eta_b, #,
-        net.b1, net.b0, 
-        net.w0, net.w1, net.w], lr=params['lr'])
+    optimizer = torch.optim.Adam(list(net.rnn.parameters()) + list(net.out.parameters()), lr=params['lr'])
+    # optimizer = torch.optim.Adam([net.alpha, net.eta,
+    #     net.pred_eta, net.pred_eta_b, #,
+    #     net.b1, net.b0, 
+    #     net.w0, net.w1, net.w], lr=params['lr'])
 
-    # import pdb; pdb.set_trace()
+    # import pdb; pdb.setTrace()
 else:
-    optimizer = torch.optim.Adam([net.w, net.alpha, net.eta, net.pred_eta,
-        net.b1, net.b0, net.pred_eta_b,# net.ln
-        *list(net.enc.parameters()), *list(net.dec.parameters()),
-        net.w0, net.w1], lr=params['lr'])
+    optimizer = torch.optim.Adam(net.parameters(), lr=params['lr'])
+
+    # optimizer = torch.optim.Adam([net.w, net.alpha, net.eta, net.pred_eta,
+    #     net.b1, net.b0, net.pred_eta_b,# net.ln
+    #     *list(net.enc.parameters()), *list(net.dec.parameters()),
+    #     net.w0, net.w1], lr=params['lr'])
 
 # optimizer = torch.optim.SGD([net.w, net.alpha, net.eta,
 #     net.b1, net.b0, net.pred_eta, net.pred_eta_b,
 #     net.w0, net.w1],
 #     lr=0.01)
+
+# net = net.cuda()
 
 total_loss = 0.0; all_losses = []
 print_every = 100
@@ -296,7 +202,7 @@ import scipy
 import scipy.io
 
 if params['dataset'] == 'mnist':
-    mm1 = np.load('/data/ajabri/moving_mnist/mnist_test_seq_28.npy')
+    mm1 = np.load('/data/ajabri/moving_mnist/mnistTest_seq_28.npy')
 
     hw = 16
     mm = np.ndarray((*mm1.shape[:-2], hw, hw))
@@ -305,7 +211,7 @@ if params['dataset'] == 'mnist':
             mm[t][n] = scipy.misc.imresize(mm1[t][n], (hw, hw))
 
 elif params['dataset'] == 'balls':
-    mm1 = scipy.io.loadmat('/data/ajabri/moving_mnist/bouncing_balls_training_data.mat')
+    mm1 = scipy.io.loadmat('./bouncing_balls_training_data_2.mat')
     mm1 = mm1['Data'][0]
     hw = int(np.sqrt(mm1[0].shape[1]))
     mm = np.ndarray((mm1.shape[0], mm1[0].shape[0], hw, hw))
@@ -328,13 +234,13 @@ saved = False
 n_pretrain = 10
 
 import os
-if os.path.exists(params['reload_vae']):
+if os.path.exists(params['reload_vae']) or os.path.exists(params['reload'] or True):
     n_pretrain = -1
 
 ll = []
 
 for e in range(100):
-    torch.save(net.get_params(), '/data/ajabri/moving_mnist/checkpoints/%s_%s.pth' % (params['name'], exp_id))
+    torch.save(net.state_dict(), '/data/ajabri/moving_mnist/checkpoints/%s_%s.pth' % (params['name'], exp_id))
 
     for numiter in range(mm.shape[1]-1):
     # for numiter in range(100):
@@ -352,14 +258,24 @@ for e in range(100):
         etas = []
         preds = []
         optimizer.zero_grad()
+        ys = []
 
         if e > n_pretrain:
             if not saved and not os.path.exists(params['reload_vae']):
                 torch.save( {net.dec, net.enc}, '/data/ajabri/moving_mnist/vae.pth')
                 saved = True
 
-            inputs = mm[:, numiter].type(ttype)
-            target = mm[:, numiter+1].type(ttype)
+            # inputs = mm[:, numiter].type(ttype)
+            # target = mm[:, numiter+1].type(ttype)
+
+            idx = np.random.choice(mm.shape[1] - 1, 30)
+            inputs = mm[:, idx].type(ttype).transpose(0, 1)
+            target = mm[:, idx+1].type(ttype).transpose(0, 1)
+
+            # inputs = torch.stack([inputs, inputs])
+            # target = torch.stack([target, target])
+
+            # import pdb; pdb.set_trace()
 
             hebb = net.initialZeroHebb()
             y = net.initialZeroState()
@@ -367,11 +283,11 @@ for e in range(100):
                 if numstep > T // 2:
                     y, hebb, pred = net(Variable(pred, requires_grad=False), y, hebb)
                 else:
-                    y, hebb, pred = net(Variable(inputs[numstep].unsqueeze(0).unsqueeze(0), requires_grad=False), y, hebb)
-
+                    y, hebb, pred = net(Variable(inputs[:, numstep].unsqueeze(1), requires_grad=False), y, hebb)
 
                 out.append(pred)
                 etas.append(net.eta_hat)
+                ys.append(y)
 
         else:
             idxs = torch.randperm(mm.shape[1]-1)[:100]
@@ -381,22 +297,19 @@ for e in range(100):
             for numstep in range(T):
                 out.append(net.dec(net.enc(Variable(inputs[numstep].unsqueeze(1), requires_grad=False))))
 
-            # import pdb; pdb.set_trace()
-        loss = bce_loss(torch.stack(out).squeeze()[:], Variable(target, requires_grad=False)[:])
+        loss = bce_loss(torch.stack(out).squeeze().transpose(0,1)[:], Variable(target, requires_grad=False)[:])
         ll.append(loss)
-
         # Apply backpropagation to adapt basic weights and plasticity coefficients
         loss.backward()
         # print
-        (torch.nn.utils.clip_grad_norm_(optimizer.param_groups[0]['params'], 10, norm_type=2))
+        (torch.nn.utils.clip_grad_norm_(optimizer.param_groups[0]['params'], 10))
         optimizer.step()
 
 
         # That's it for the actual algorithm!
         # Print statistics, save files
-        lossnum = loss.data[0].item()   # Saved loss is the actual learning loss (MSE)
-        #to = target.cpu().numpy(); yo = torch.stack(out).data.cpu().numpy(); z = (yo - to) ** 2; lossnum = np.mean(z[:])  # Saved loss is the error rate
-        
+        lossnum = loss.item()   # Saved loss is the actual learning loss (MSE)
+        #to = target.cpu().numpy(); yo = torch.stack(out).data.cpu().numpy(); z = (yo - to) ** 2; lossnum = np.mean(z[:])  # Saved loss is the error rate        
         ll.append(loss.item())
 
         total_loss  += lossnum
@@ -412,22 +325,22 @@ for e in range(100):
 
 
             pca = sklearn.decomposition.PCA(n_components=2)
-            YY = torch.cat(ys).detach().cpu().numpy()
+            YY = torch.stack(ys)[:, 0].detach().cpu().numpy()
             pca.fit(YY)
             XX = pca.transform(YY)
 
             vis.scatter(X=XX,
-                win='pca' + str(exp_id) + str((numiter+1) % 3) + str(T==_T),
+                win='pca' + str(exp_id) + str((numiter+1) % 3) + str(T==T),
                 opts=dict(
                     markercolor=(np.arange(T)/T * 255).astype(np.int),
-                    title='pca' + str(exp_id) + str((numiter+1) % 3) + str(T==_T)
+                    title='pca' + str(exp_id) + str((numiter+1) % 3) + str(T==T)
                 ))
 
             vis.scatter(X=np.concatenate([XX,  (np.arange(T)[:,None] - T/2) /T], axis=-1),
-                win='pca3d' + str(exp_id) + str((numiter+1) % 3) + str(T==_T),
+                win='pca3d' + str(exp_id) + str((numiter+1) % 3) + str(T==T),
                 opts=dict(
                     markercolor=(np.arange(T)/T * 255).astype(np.int),
-                    title='pca' + str(exp_id) + str((numiter+1) % 3) + str(T==_T)
+                    title='pca' + str(exp_id) + str((numiter+1) % 3) + str(T==T)
                 ))
 
             # vis.line(X=torch.cat([inputs.squeeze(-1), inputs.squeeze(-1)], dim=-1), Y=torch.cat([target.squeeze(-1), torch.cat(out)], dim=-1), win=str(exp_id) + str((numiter+1) % 3), opts=dict(title=str(exp_id) + str((numiter+1) % 3)))
@@ -436,10 +349,10 @@ for e in range(100):
             # YY = torch.cat([torch.ones(target.squeeze(-1).shape), torch.ones(target.squeeze(-1).shape) + 1], dim=0)
             # vis.scatter(Y=YY, X=XX, win='scatter'+str(exp_id) + str((numiter+1) % 3), opts=dict(title=str(exp_id) + str((numiter+1) % 3)))
             if e > n_pretrain:
-                vis.images(torch.cat(out), nrow=20, win='vid'+str(exp_id) + str((numiter+1) % 3), opts=dict(title=str(exp_id) + str((numiter+1) % 3), 
+                vis.images(torch.stack(out).squeeze().transpose(0,1)[0].unsqueeze(1), nrow=20, win='vid'+str(exp_id) + str((numiter+1) % 3), opts=dict(title=str(exp_id) + str((numiter+1) % 3), 
                                     height=50*(target.shape[0]//20 + 1), width=50*20))
 
-                vis.images(target.unsqueeze(1), nrow=20, win='vidtarg'+str(exp_id) + str((numiter+1) % 3), opts=dict(title=str(exp_id) + str((numiter+1) % 3), 
+                vis.images(target[0].unsqueeze(1), nrow=20, win='vidtarg'+str(exp_id) + str((numiter+1) % 3), opts=dict(title=str(exp_id) + str((numiter+1) % 3), 
                                     height=50*(target.shape[0]//20 + 1), width=50*20))
 
             else:
@@ -451,7 +364,7 @@ for e in range(100):
                     opts=dict(title=str(exp_id) + str((numiter+1) % 3), 
                     height=50*(target.shape[0]//20 + 1), width=50*20))
 
-            # import pdb; pdb.set_trace()
+            # import pdb; pdb.setTrace()
 
             print((e, numiter, "===="))
             # print(target.cpu().numpy()[-10:].squeeze())   # Target pattern to be reconstructed
@@ -466,7 +379,7 @@ for e in range(100):
             print("Mean loss over last", print_every, "iters:", total_loss)
 
             if e > n_pretrain:
-                print("Eta: ", net.eta.item(), "mean Alpha", net.alpha.mean().item())
+                # print("Eta: ", net.eta.item(), "mean Alpha", net.alpha.mean().item())
                 print("Mean Eta: ", sum([e.abs().mean() for e in etas]).item() / len(etas), "Eta sparsity: ", sum([(e>0.1).float().mean() for e in etas]).item() / len(etas))
                 # print(sum([e.abs()/ e.sum() for e in etas]) / len(etas))
 

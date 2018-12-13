@@ -82,7 +82,10 @@ class Cell(nn.Module):
         assert (hebb is not None) == self.hebb
 
         wx = self.nonlin(self.inp_lin(x))
-        wh = self.hid_lin(*(hid, hebb) if self.hebb else hid)
+        if self.hebb:
+            wh = self.hid_lin(hid, hebb)
+        else:
+            wh = self.hid_lin(hid)
 
         wy = self.nonlin(self.ln(wx + wh))
 
@@ -112,10 +115,12 @@ class Plastic(nn.Module):
         # import pdb; pdb.set_trace()
 
     def forward(self, x, hebb):
-        return x.mm(self.w  + (torch.mul(self.alpha, hebb)) ) + self.b
+        out = x.mm(self.w) + torch.matmul(hebb, x.unsqueeze(-1)).squeeze(-1)
+        out += self.b
+        # import pdb; pdb.set_trace()
+        return out
         
     def update_hebb(self, x, y, hebb):
-        eta_hat = F.sigmoid(y.mm(self.pred_eta) + self.pred_eta_b)
 
         # hebb = torch.clamp( hebb + eta_hat.transpose(0,1) * torch.bmm(yin.unsqueeze(2), ymid.unsqueeze(1))[0], min=-1, max=1)
         
@@ -132,7 +137,7 @@ class Plastic(nn.Module):
         eta_hat = F.sigmoid(y.mm(self.pred_eta) + self.pred_eta_b)
 
         # hebb = torch.clamp( hebb + eta_hat.transpose(0,1) * torch.bmm(yin.unsqueeze(2), ymid.unsqueeze(1))[0], min=-1, max=1)
-        hebb = (1-self.lamda) * hebb + eta_hat.transpose(0,1) * torch.bmm(x.unsqueeze(2), y.unsqueeze(1))[0]
+        hebb = (1-self.lamda) * hebb + eta_hat.unsqueeze(-1) * torch.bmm(x.unsqueeze(2), y.unsqueeze(1))
         # hebb = torch.clamp( hebb + eta_hat.view(self.nhid, self.nhid) * torch.bmm(yin.unsqueeze(2), ymid.unsqueeze(1))[0], min=-1, max=1)
        
         self.eta_hat = eta_hat
